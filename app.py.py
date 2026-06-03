@@ -2,7 +2,7 @@
 ================================================================================
 SLEEP CALM - LOGISTICS ENTERPRISE
 Sistema Corporativo de Monitoramento de Entregas
-Versao: 10.3 - (PT/ES)
+Versao: 10.3 - (ES)
 ================================================================================
 """
 
