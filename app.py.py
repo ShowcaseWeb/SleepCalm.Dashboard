@@ -2,7 +2,7 @@
 ================================================================================
 SLEEP CALM - LOGISTICS ENTERPRISE
 Sistema Corporativo de Monitoramento de Entregas
-Versao: 10.3 - Corrigido (PT/ES)
+Versao: 10.5 - SLA Corrigido (PT/ES)
 ================================================================================
 """
 
@@ -41,7 +41,7 @@ COLOR_CYAN      = "#06b6d4"
 BG_CARD         = "#1e293b"
 BG_APP          = "#0f172a"
 GRID_COLOR      = "#334155"
-""
+
 MESES_NOMES = ["Jan","Fev","Mar","Abr","Mai","Jun",
                "Jul","Ago","Set","Out","Nov","Dez"]
 
@@ -161,29 +161,38 @@ def load_data():
     return df, audit
 
 # =============================================================================
-# 4. CAMADA DE METRICAS
+# 4. CAMADA DE METRICAS (CORRIGIDA - SLA REAL)
 # =============================================================================
 
 def calcular_sla(df_):
-    resultado = {"sla": 0.0, "no_prazo": 0, "total_entregues": 0, "atrasados": 0, "valido": False, "alerta": None}
+    """
+    Calcula SLA considerando que:
+    - Pedidos wc-completed SEM classificação em 'On Time' são contados como ATRASADOS
+    - Isso porque se o pedido foi entregue (completed), precisa ser avaliado
+    """
+    resultado = {"sla": 0.0, "no_prazo": 0, "total_entregues": 0, "atrasados": 0, "sem_classificacao": 0, "valido": False, "alerta": None}
 
     if df_.empty or "estado" not in df_.columns:
         return resultado
 
     entregues = df_[df_["estado"] == STATUS_COMPLETED].copy()
-    total = len(entregues)
+    total_entregues = len(entregues)
 
-    if total == 0:
+    if total_entregues == 0:
         return resultado
 
     no_prazo = int((entregues["On Time"] == "On Time").sum())
-    atrasados = int((entregues["On Time"] == "No ontime").sum())
+    atrasados_classificados = int((entregues["On Time"] == "No ontime").sum())
+    sem_classificacao = total_entregues - no_prazo - atrasados_classificados
 
-    sem_classificacao = total - no_prazo - atrasados
+    # REGRA DE NEGÓCIO: pedidos sem classificação contam como ATRASADOS
+    atrasados = atrasados_classificados + sem_classificacao
+
+    resultado["sem_classificacao"] = sem_classificacao
     if sem_classificacao > 0:
-        resultado["alerta"] = f"{sem_classificacao} entrega(s) sem classificacao em 'On Time'."
+        resultado["alerta"] = f"⚠️ {sem_classificacao} pedido(s) entregues sem classificação 'On Time' - contados como ATRASADOS."
 
-    sla = round(no_prazo / total * 100, 2)
+    sla = round(no_prazo / total_entregues * 100, 2)
 
     if sla > 100:
         resultado["alerta"] = f"SLA invalido: {sla}% > 100%."
@@ -192,10 +201,20 @@ def calcular_sla(df_):
         resultado["alerta"] = f"SLA invalido: {sla}% < 0%."
         sla = 0.0
 
-    resultado.update({"sla": sla, "no_prazo": no_prazo, "total_entregues": total, "atrasados": atrasados, "valido": True})
+    resultado.update({
+        "sla": sla, 
+        "no_prazo": no_prazo, 
+        "total_entregues": total_entregues, 
+        "atrasados": atrasados,
+        "valido": True
+    })
     return resultado
 
 def calcular_sla_mensal(df_, ano, ufs=None, transportadoras=None):
+    """
+    Calcula SLA mensal para UM ano específico.
+    Pedidos sem classificação contam como ATRASADOS.
+    """
     mask = df_["ano"] == ano
     if ufs:
         mask &= df_["UF"].isin(ufs)
@@ -206,7 +225,15 @@ def calcular_sla_mensal(df_, ano, ufs=None, transportadoras=None):
     if sub.empty:
         return pd.Series(0.0, index=range(1, 13))
 
-    grp = sub.groupby("mes").apply(lambda g: (g["On Time"] == "On Time").sum() / len(g) * 100 if len(g) > 0 else 0.0)
+    def calc_sla_grupo(g):
+        total = len(g)
+        if total == 0:
+            return 0.0
+        no_prazo = (g["On Time"] == "On Time").sum()
+        # sem classificação contam como atrasado (não entram no no_prazo)
+        return round(no_prazo / total * 100, 2)
+
+    grp = sub.groupby("mes").apply(calc_sla_grupo)
     return grp.reindex(range(1, 13), fill_value=0.0)
 
 def calcular_sla_por_grupo(df_, coluna):
@@ -221,8 +248,11 @@ def calcular_sla_por_grupo(df_, coluna):
         Entregues = ("On Time", "count"),
         NoPrazo   = ("On Time", lambda x: (x == "On Time").sum()),
         Atrasados = ("On Time", lambda x: (x == "No ontime").sum()),
+        SemClassif = ("On Time", lambda x: x.isna().sum()),
     ).reset_index()
 
+    # Ajusta atrasados para incluir sem classificação
+    grp["Atrasados"] = grp["Atrasados"] + grp["SemClassif"]
     grp["SLA"] = (grp["NoPrazo"] / grp["Entregues"] * 100).round(1)
     return grp.sort_values("SLA", ascending=True)
 
@@ -350,8 +380,9 @@ def fig_delay_distribution(df_):
         return None
     
     atrasos_raw = pd.to_numeric(df_["Dias de demora"], errors='coerce')
-    mask = (df_["estado"] == STATUS_COMPLETED) & (df_["On Time"] == "No ontime")
-    atrasos = atrasos_raw[mask].dropna()
+    # Inclui todos os entregues que estão atrasados (classificados OU sem classificação)
+    mask_atrasados = (df_["estado"] == STATUS_COMPLETED) & (df_["On Time"] != "On Time")
+    atrasos = atrasos_raw[mask_atrasados].dropna()
     
     if atrasos.empty:
         return None
@@ -465,7 +496,7 @@ with st.sidebar:
     st.markdown("""<div style="text-align:center;padding:1rem 0 0.5rem">
       <div style="font-size:2.8rem">📦</div>
       <div style="font-weight:700;font-size:1.1rem;color:white">Sleep Calm</div>
-      <div style="font-size:0.7rem;color:#64748b">Logistics Enterprise v10.3</div>
+      <div style="font-size:0.7rem;color:#64748b">Logistics Enterprise v10.5</div>
     </div>""", unsafe_allow_html=True)
     st.markdown("---")
     st.markdown("### 🌐 Idioma / Language")
@@ -492,6 +523,10 @@ with st.sidebar:
     transp_sel = st.multiselect("Transportadora", transp_disp, placeholder="Todas")
     st.markdown("---")
     st.link_button("Registrar Devolucao", "https://script.google.com/a/macros/sleepcalm.com.br/s/AKfycbzyOsb6FzdRee9Mn88h86fPx7B7ZmZoxNZLP-brNgUZr9-BRFhW3Dt49_QeRe59Mhg6yg/exec", use_container_width=True)
+    
+    st.markdown("---")
+    st.markdown("### 📊 Regra do SLA")
+    st.info("Pedidos entregues (wc-completed) sem classificação em 'On Time' são contados como **ATRASADOS**.")
 
 # =============================================================================
 # 9. APLICAR FILTROS
@@ -522,6 +557,7 @@ sla = metricas["sla"]
 no_prazo = metricas["no_prazo"]
 total_ent = metricas["total_entregues"]
 atrasados = metricas["atrasados"]
+sem_classif = metricas.get("sem_classificacao", 0)
 delta_sla = round(sla - metricas_ant["sla"], 1) if metricas_ant else 0.0
 cor_sla = _color_sla(sla)
 
@@ -531,7 +567,7 @@ st.markdown(f"""
   <div style="display:flex;justify-content:space-between;align-items:center">
     <div><h1>📦 Sleep Calm - Logistics Enterprise</h1>
     <p>Sistema Corporativo de Monitoramento de Entregas | Periodo: <strong>{periodo_txt}</strong> | Meta SLA: <strong>{META_SLA}%</strong></p></div>
-    <div style="font-size:0.7rem;background:rgba(255,255,255,0.15);padding:0.4rem 1rem;border-radius:20px;color:white">v10.3</div>
+    <div style="font-size:0.7rem;background:rgba(255,255,255,0.15);padding:0.4rem 1rem;border-radius:20px;color:white">v10.5</div>
   </div>
 </div>""", unsafe_allow_html=True)
 
@@ -697,6 +733,8 @@ with st.expander("Como o SLA e calculado?"):
 **O que e considerado:** Apenas pedidos com status 'wc-completed'
 
 **Meta atual:** {META_SLA}%
+
+**⚠️ Regra importante:** Pedidos entregues (wc-completed) que NAO possuem classificacao na coluna 'On Time' sao contados como **ATRASADOS**.
 
 **Regras de negocio aplicadas:**
 - Pedidos com estado wc-cancelled sao excluidos do calculo.
