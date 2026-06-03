@@ -2,7 +2,7 @@
 ================================================================================
 SLEEP CALM - LOGISTICS ENTERPRISE
 Sistema Corporativo de Monitoramento de Entregas
-Versao: 10.3 - Corrigido (PT/ES)
+Versao: 10.4 - Corrigido (PT/ES)
 ================================================================================
 """
 
@@ -161,7 +161,7 @@ def load_data():
     return df, audit
 
 # =============================================================================
-# 4. CAMADA DE METRICAS
+# 4. CAMADA DE METRICAS (CORRIGIDA)
 # =============================================================================
 
 def calcular_sla(df_):
@@ -196,6 +196,10 @@ def calcular_sla(df_):
     return resultado
 
 def calcular_sla_mensal(df_, ano, ufs=None, transportadoras=None):
+    """
+    Calcula SLA mensal para UM ano específico.
+    IMPORTANTE: Esta função recebe o DataFrame JÁ FILTRADO ou o df_raw + filtros
+    """
     mask = df_["ano"] == ano
     if ufs:
         mask &= df_["UF"].isin(ufs)
@@ -245,7 +249,45 @@ def calcular_metricas_principais(df_):
     }
 
 # =============================================================================
-# 5. CAMADA DE VISUALIZACAO
+# 5. FUNCAO DE DEBUG
+# =============================================================================
+
+def debug_sla_mes(df_raw, ano, mes_num, ufs, transportadoras):
+    """Função para depurar o cálculo do SLA de um mês específico"""
+    
+    # Filtros
+    mask = (df_raw["ano"] == ano) & (df_raw["mes"] == mes_num)
+    if ufs:
+        mask &= df_raw["UF"].isin(ufs)
+    if transportadoras:
+        mask &= df_raw["Proveedor"].isin(transportadoras)
+    
+    df_filtrado = df_raw[mask]
+    entregues = df_filtrado[df_filtrado["estado"] == STATUS_COMPLETED]
+    
+    total = len(entregues)
+    ontime = (entregues["On Time"] == "On Time").sum()
+    atrasados = (entregues["On Time"] == "No ontime").sum()
+    sem_classif = total - ontime - atrasados
+    
+    sla_calc = (ontime / total * 100) if total > 0 else 0
+    
+    st.write(f"### Debug - {MESES_NOMES[mes_num-1]}/{ano}")
+    st.write(f"**Total entregues:** {total}")
+    st.write(f"**No prazo:** {ontime}")
+    st.write(f"**Atrasados:** {atrasados}")
+    st.write(f"**Sem classificação:** {sem_classif}")
+    st.write(f"**SLA calculado:** {sla_calc:.2f}%")
+    
+    # Mostrar amostra dos dados problemáticos
+    if sem_classif > 0:
+        st.warning(f"{sem_classif} entregas sem classificação em 'On Time'!")
+        st.dataframe(entregues[entregues["On Time"].isna()][["numero_pedido", "Proveedor", "On Time", "fecha"]].head(10))
+    
+    return sla_calc
+
+# =============================================================================
+# 6. CAMADA DE VISUALIZACAO
 # =============================================================================
 
 _LAYOUT_DEFAULTS = dict(
@@ -403,7 +445,7 @@ def fig_tempo_medio_transportadora(df_):
     return fig
 
 # =============================================================================
-# 6. CONFIGURACAO DA PAGINA E CSS
+# 7. CONFIGURACAO DA PAGINA E CSS
 # =============================================================================
 
 st.set_page_config(page_title="Sleep Calm - Logistics", page_icon="📦", layout="wide", initial_sidebar_state="expanded")
@@ -446,7 +488,7 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # =============================================================================
-# 7. CARREGAR DADOS
+# 8. CARREGAR DADOS
 # =============================================================================
 
 df_raw, audit_log = load_data()
@@ -458,14 +500,14 @@ if df_raw.empty:
 hoje = datetime.now()
 
 # =============================================================================
-# 8. SIDEBAR
+# 9. SIDEBAR
 # =============================================================================
 
 with st.sidebar:
     st.markdown("""<div style="text-align:center;padding:1rem 0 0.5rem">
       <div style="font-size:2.8rem">📦</div>
       <div style="font-weight:700;font-size:1.1rem;color:white">Sleep Calm</div>
-      <div style="font-size:0.7rem;color:#64748b">Logistics Enterprise v10.3</div>
+      <div style="font-size:0.7rem;color:#64748b">Logistics Enterprise v10.4</div>
     </div>""", unsafe_allow_html=True)
     st.markdown("---")
     st.markdown("### 🌐 Idioma / Language")
@@ -492,9 +534,14 @@ with st.sidebar:
     transp_sel = st.multiselect("Transportadora", transp_disp, placeholder="Todas")
     st.markdown("---")
     st.link_button("Registrar Devolucao", "https://script.google.com/a/macros/sleepcalm.com.br/s/AKfycbzyOsb6FzdRee9Mn88h86fPx7B7ZmZoxNZLP-brNgUZr9-BRFhW3Dt49_QeRe59Mhg6yg/exec", use_container_width=True)
+    
+    st.markdown("---")
+    st.markdown("### 🔧 Debug")
+    if st.button("Verificar SLA de Maio", use_container_width=True):
+        debug_sla_mes(df_raw, ano_sel, 5, ufs_sel, transp_sel)
 
 # =============================================================================
-# 9. APLICAR FILTROS
+# 10. APLICAR FILTROS
 # =============================================================================
 
 def _apply_filters(df, ano, mes, ufs, transportadoras):
@@ -512,7 +559,7 @@ df = _apply_filters(df_raw, ano_sel, mes_sel, ufs_sel, transp_sel)
 df_ant = _apply_filters(df_raw, ano_sel - 1, mes_sel, ufs_sel, transp_sel) if comparar else None
 
 # =============================================================================
-# 10. METRICAS
+# 11. METRICAS
 # =============================================================================
 
 metricas = calcular_metricas_principais(df)
@@ -531,7 +578,7 @@ st.markdown(f"""
   <div style="display:flex;justify-content:space-between;align-items:center">
     <div><h1>📦 Sleep Calm - Logistics Enterprise</h1>
     <p>Sistema Corporativo de Monitoramento de Entregas | Periodo: <strong>{periodo_txt}</strong> | Meta SLA: <strong>{META_SLA}%</strong></p></div>
-    <div style="font-size:0.7rem;background:rgba(255,255,255,0.15);padding:0.4rem 1rem;border-radius:20px;color:white">v10.3</div>
+    <div style="font-size:0.7rem;background:rgba(255,255,255,0.15);padding:0.4rem 1rem;border-radius:20px;color:white">v10.4</div>
   </div>
 </div>""", unsafe_allow_html=True)
 
@@ -543,7 +590,7 @@ if metricas.get("alerta"):
     st.markdown(f'<div class="alert-badge">{metricas["alerta"]}</div>', unsafe_allow_html=True)
 
 # =============================================================================
-# 11. KPI CARDS
+# 12. KPI CARDS
 # =============================================================================
 
 c1, c2, c3, c4 = st.columns(4)
@@ -590,10 +637,11 @@ with c4:
 st.markdown("---")
 
 # =============================================================================
-# 12. GRAFICOS
+# 13. GRAFICOS
 # =============================================================================
 
 st.markdown('<div class="section-title">1. SLA por Mes - Comparativo Anual</div>', unsafe_allow_html=True)
+# CORRIGIDO: Agora passa df_raw + filtros para mostrar o ano completo
 sla_atual = calcular_sla_mensal(df_raw, ano_sel, ufs_sel, transp_sel)
 sla_ant_s = calcular_sla_mensal(df_raw, ano_sel - 1, ufs_sel, transp_sel) if comparar else None
 st.plotly_chart(fig_sla_mensal(sla_atual, sla_ant_s, ano_sel, comparar), use_container_width=True)
@@ -658,7 +706,7 @@ else:
 st.markdown("---")
 
 # =============================================================================
-# 13. PEDIDOS CRITICOS
+# 14. PEDIDOS CRITICOS
 # =============================================================================
 
 st.markdown('<div class="section-title">11. Pedidos Criticos (Nao Entregues)</div>', unsafe_allow_html=True)
@@ -676,7 +724,7 @@ else:
     st.success("Nenhum pedido pendente de entrega!")
 
 # =============================================================================
-# 14. RANKING DE TRANSPORTADORAS
+# 15. RANKING DE TRANSPORTADORAS
 # =============================================================================
 
 st.markdown('<div class="section-title">12. Ranking de Transportadoras</div>', unsafe_allow_html=True)
@@ -687,7 +735,7 @@ if not df_transp_grp.empty:
     st.dataframe(df_rank[["Proveedor", "SLA", "Entregues", "NoPrazo", "Atrasados"]], use_container_width=True)
 
 # =============================================================================
-# 15. EXPLICACAO DO SLA
+# 16. EXPLICACAO DO SLA
 # =============================================================================
 
 with st.expander("Como o SLA e calculado?"):
@@ -706,7 +754,7 @@ with st.expander("Como o SLA e calculado?"):
     """)
 
 # =============================================================================
-# 16. RODAPE
+# 17. RODAPE
 # =============================================================================
 
 st.markdown(f"""
